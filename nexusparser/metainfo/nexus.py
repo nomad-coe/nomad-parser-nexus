@@ -31,7 +31,7 @@ from nomad.metainfo import (
     Section, Package, SubSection, Definition, Datetime, Bytes, Unit, MEnum, Quantity)
 from nomad.datamodel import EntryArchive
 from nomad.metainfo.elasticsearch_extension import Elasticsearch
-from nexusparser.tools import nexus
+sys.setrecursionlimit(2000)
 
 # URL_REGEXP from
 # https://stackoverflow.com/questions/3809401/what-is-a-good-regular-expression-to-match-a-url
@@ -39,14 +39,18 @@ URL_REGEXP = re.compile(r'(https?:\/\/(www\.)?[-a-zA-Z0-9@:%._\+~#=]'
                         r'{1,256}\.[a-zA-Z0-9()]{1,6}\b([-a-zA-Z0-9()@:%_\+.~#?&//=]*))')
 XML_NAMESPACES = {'nx': 'http://definition.nexusformat.org/nxdl/3.1'}
 
-# TO DO the validation still show some problems. Most notably there are a few higher
+# TODO the validation still show some problems. Most notably there are a few higher
 # dimensional fields with non number types, which the metainfo does not support
 VALIDATE = False
 CURRENT_PACKAGE: Package = None
+
 _definition_sections: Dict[str, Section] = dict()
 _XML_PARENT_MAP: Dict[ET.Element, ET.Element] = None
 _NX_DOC_BASE = 'https://manual.nexusformat.org/classes'
-_NX_TYPES = {  # Primitive Types,  'ISO8601' is the only type not defined here
+
+# TODO There are more types in nxdl, but they are not used by the current base classes and
+# application definitions.
+_NX_TYPES = {
     'NX_FLOAT': np.dtype(np.float64),
     'NX_CHAR': str,
     'NX_BOOLEAN': bool,
@@ -55,7 +59,8 @@ _NX_TYPES = {  # Primitive Types,  'ISO8601' is the only type not defined here
     'NX_NUMBER': np.dtype(np.number),
     'NX_POSINT': np.dtype(np.uint64),
     'NX_BINARY': Bytes,
-    'NX_DATE_TIME': Datetime}
+    'NX_DATE_TIME': Datetime
+}
 
 
 def to_camel_case(snake_str: str, upper: bool = False):
@@ -135,25 +140,12 @@ def add_common_properties_helper(base_section, definition):
         definition.more.update(**base_section.more)
 
 
-def get_nexus_category(xml_node: ET.Element):
-    '''
-    retrieves the category from the root element
-    '''
-    elem = xml_node
-    parent = elem
-    while parent is not None:
-        elem = parent
-        parent = _XML_PARENT_MAP.get(elem)
-    return elem.attrib['category']
-
-
 def add_common_properties(xml_node: ET.Element, definition: Definition):
     '''
     Adds general metainfo definition properties (e.g. deprecated, docs, optional, ...)
     from the given nexus XML node to the given metainfo definition.
     '''
     nx_kind = definition.more.get('nx_kind')
-    nx_category = get_nexus_category(xml_node)
     xml_attrs = xml_node.attrib
 
     # Read properties from potential base section. Those are not inherited, but we
@@ -180,7 +172,7 @@ def add_common_properties(xml_node: ET.Element, definition: Definition):
         definition.deprecated = xml_attrs['deprecated']
 
     definition.more['nx_optional'] = xml_attrs.get(
-        'optional', nx_category == 'base')
+        'optional', CURRENT_PACKAGE.name == 'nexus_base_classes')
 
     if 'minOccurs' in xml_attrs:
         definition.more['nx_min_occurs'] = xml_attrs['minOccurs']
@@ -191,10 +183,7 @@ def add_common_properties(xml_node: ET.Element, definition: Definition):
     if 'recommended' in xml_attrs:
         definition.more['nx_recommended'] = xml_attrs['recommended']
 
-    if 'category' in xml_attrs:
-        definition.more['nx_category'] = xml_attrs['category']
-
-    # TO DO there are probably even more nxdl attributes?
+    # TODO there are probably even more nxdl attributes?
 
 
 def add_attributes(xml_node: ET.Element, section: Section):
@@ -223,17 +212,21 @@ def add_group_properties(xml_node: ET.Element, section: Section):
     for group in xml_node.findall('nx:group', XML_NAMESPACES):
         group_section = create_group_section(group, section)
         section.inner_section_definitions.append(group_section)
+
         if 'name' in group.attrib:
             name = f'nx_group_{group.attrib["name"]}'
         else:
             name = f'nx_group_{group.attrib["type"].replace("NX", "").upper()}'
+
         max_occurs = group.attrib.get('maxOccurs', '0')
         repeats = any(name_char.isupper()
                       for name_char in name) or max_occurs == 'unbounded' or int(max_occurs) > 1
         section.sub_sections.append(SubSection(
             section_def=group_section, nx_kind='group', name=name, repeats=repeats))
+
     for field in xml_node.findall('nx:field', XML_NAMESPACES):
         field_section = create_field_section(field, section)
+
         name = field.attrib["name"]
         max_occurs = field.attrib.get('maxOccurs', '0')
         repeats = any(name_char.isupper()
@@ -331,14 +324,12 @@ def create_field_section(xml_node: ET.Element, container: Section):
 
     if 'type' in xml_attrs:
         nx_type = xml_attrs['type']
-    else:
-        nx_type = 'NX_CHAR'
-    if nx_type not in _NX_TYPES:
-        raise NotImplementedError(f'type {nx_type} is not supported')
-    field_section.more['nx_type'] = nx_type
+        if nx_type not in _NX_TYPES:
+            raise NotImplementedError(f'type {nx_type} is not supported')
+        field_section.more['nx_type'] = nx_type
 
-    if value_quantity.type is None or value_quantity.type is Any or nx_type != 'NX_CHAR':
-        value_quantity.type = _NX_TYPES[nx_type]
+        if value_quantity.type is None or value_quantity.type is Any or nx_type != 'NX_CHAR':
+            value_quantity.type = _NX_TYPES[nx_type]
 
     enum_type = get_enum(xml_node)
     if enum_type:
@@ -350,11 +341,11 @@ def create_field_section(xml_node: ET.Element, container: Section):
     if 'units' in xml_attrs:
         field_section.more['nx_units'] = xml_attrs['units']
         if xml_attrs['units'] != 'NX_UNITLESS':
-            # TO DO a default could be created from the nx_units value
+            # TODO a default could be created from the nx_units value
             field_section.quantities.append(Quantity(
                 name='nx_unit', type=Unit,
-                description='The specific unit for that this fields data has.',
-                a_elasticsearch=Elasticsearch()))
+                a_elasticsearch=Elasticsearch(),
+                description='The specific unit for that this fields data has.'))
 
     dimensions = xml_node.find('nx:dimensions', XML_NAMESPACES)
     if dimensions is not None:
@@ -402,11 +393,8 @@ def create_class_section(xml_node: ET.Element) -> Section:
     '''
     xml_attrs = xml_node.attrib
     assert 'name' in xml_attrs
-    assert 'category' in xml_attrs
 
-    class_section = get_or_create_section(xml_attrs['name'],
-                                          nx_kind=xml_attrs['type'],
-                                          nx_category=xml_attrs['category'])
+    class_section = get_or_create_section(xml_attrs['name'], nx_kind=xml_attrs['type'])
 
     if 'extends' in xml_attrs:
         base_section = get_or_create_section(xml_attrs['extends'])
@@ -434,66 +422,68 @@ def create_package_from_nxdl_directory(path: str) -> Package:
             nxdl_path = os.path.join(path, nxdl_file)
             xml_tree = ET.parse(nxdl_path)
             xml_node = xml_tree.getroot()
+
             global _XML_PARENT_MAP  # pylint: disable=global-statement
             _XML_PARENT_MAP = {child: parent for parent in xml_tree.iter() for child in parent}
+
             assert xml_node.attrib.get('type') == 'group', 'definition is not a group'
 
-            # The section gets already implicitly added to CURRENT_PACKAGE by get_or_create_section
+            # The section gets already implicitly added to CURRENT_PACKAGE by
+            # get_or_create_section
             create_class_section(xml_node)
 
-        except NotImplementedError:
+        except Exception as exc:
             print(f'Exception while mapping {nxdl_file}', file=sys.stderr)
+            raise exc
 
     return CURRENT_PACKAGE
 
 
-# separated metainfo package for the nexus base classes, application defs and contributed classes.
-BASE_CLASSES = create_package_from_nxdl_directory(os.path.join(nexus.get_nexus_definitions_path(),
-                                                               'base_classes'))
-APPLICATIONS = create_package_from_nxdl_directory(os.path.join(nexus.get_nexus_definitions_path(),
-                                                               'applications'))
-CONTRIBUTED = create_package_from_nxdl_directory(os.path.join(nexus.get_nexus_definitions_path(),
-                                                              'contributed_definitions'))
-PACKAGES = (BASE_CLASSES, APPLICATIONS, CONTRIBUTED)
+NX_DEFINITIONS_PATH = os.path.join(
+    os.path.dirname(__file__),
+    '../definitions')
+
+
+# We generate separated metainfo package for the nexus base classes and application
+# definitions.
+BASE_CLASSES = create_package_from_nxdl_directory(os.path.join(NX_DEFINITIONS_PATH, 'base_classes'))
+APPLICATIONS = create_package_from_nxdl_directory(os.path.join(NX_DEFINITIONS_PATH, 'applications'))
+# TODO there are problems generating with nx_package='contributed_definitions'
+PACKAGES = (BASE_CLASSES, APPLICATIONS)
 
 # We take the application definitions and create a common parent section that allows to
 # include nexus in an EntryArchive.
-NEXUS_SECTION = Section(validate=VALIDATE, name='Nexus')
+NEXUS_SECTION = Section(
+    validate=VALIDATE,
+    name='Nexus'
+)
 
 for application_section in APPLICATIONS.section_definitions:  # pylint: disable=not-an-iterable
-    if application_section.more.get('nx_category') == 'application':
-        sub_section = SubSection(
-            section_def=application_section,
-            name=application_section.name.replace('NX', 'nx_application_'))
-        NEXUS_SECTION.sub_sections.append(sub_section)
-
-for application_section in CONTRIBUTED.section_definitions:  # pylint: disable=not-an-iterable
-    if application_section.more.get('nx_category') == 'application':
-        sub_section = SubSection(
-            section_def=application_section,
-            name=application_section.name.replace('NX', 'nx_application_'))
-        NEXUS_SECTION.sub_sections.append(sub_section)
+    sub_section = SubSection(
+        section_def=application_section,
+        name=application_section.name.replace('NX', 'nx_application_')
+    )
+    NEXUS_SECTION.sub_sections.append(sub_section)
 
 APPLICATIONS.section_definitions.append(NEXUS_SECTION)
-
-ENTRY_ARCHIVE_NEXUS_SUB_SECTION = \
-    SubSection(name='nexus',
-               section_def=NEXUS_SECTION)
-# SubSection(name='nexus',
-#            section_def=NEXUS_SECTION,
-#            a_elasticsearch=Elasticsearch(nested=True))
-EntryArchive.nexus = ENTRY_ARCHIVE_NEXUS_SUB_SECTION  # type: ignore
-EntryArchive.m_def.sub_sections.append(ENTRY_ARCHIVE_NEXUS_SUB_SECTION)
-
 
 # We need to initialize the metainfo definitions. This is usually done automatically,
 # when the metainfo schema is defined though MSection Python classes.
 for package in PACKAGES:
     package.init_metainfo()
 
+# Add nexus as a subsection of EntryArchive
+ENTRY_ARCHIVE_NEXUS_SUB_SECTION = SubSection(
+    name='nexus',
+    section_def=NEXUS_SECTION,
+    a_elasticsearch=Elasticsearch(auto_include_subsections=True)
+)
+EntryArchive.nexus = ENTRY_ARCHIVE_NEXUS_SUB_SECTION  # type: ignore
+EntryArchive.m_def.sub_sections.append(ENTRY_ARCHIVE_NEXUS_SUB_SECTION)
+ENTRY_ARCHIVE_NEXUS_SUB_SECTION.init_metainfo()
 
 # We skip the Python code generation for now and offer Python classes as variables
-# TO DO not necessary right now, could also be done case-by-case by the nexus parser
+# TODO not necessary right now, could also be done case-by-case by the nexus parser
 PYTHON_MODULE = sys.modules[__name__]
 for package in PACKAGES:
     for sektion in package.section_definitions:  # pylint: disable=not-an-iterable
